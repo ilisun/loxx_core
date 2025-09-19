@@ -1,0 +1,54 @@
+namespace Routing;
+
+enum RoadClass : byte {
+  MOTORWAY = 0,
+  PRIMARY = 1,
+  SECONDARY = 2,
+  RESIDENTIAL = 3,
+  FOOTWAY = 4,
+  PATH = 5,
+  STEPS = 6
+}
+
+table Node {
+  id: uint;
+  lat_q: int;
+  lon_q: int;
+  first_edge: uint;
+  edge_count: ushort;
+}
+
+table Edge {
+  from_node: uint;
+  to_node: uint;
+  length_m: float;
+  speed_mps: float;
+  foot_speed_mps: float;
+  oneway: bool;
+  road_class: RoadClass;
+  access_mask: ushort;
+  shape_start: uint;
+  shape_count: ushort;
+  encoded_polyline: string;
+}
+
+table ShapePoint {
+  lat_q: int;
+  lon_q: int;
+}
+
+table LandTile {
+  z: ushort;
+  x: uint;
+  y: uint;
+  nodes: [Node];
+  edges: [Edge];
+  shapes: [ShapePoint];
+  version: uint;
+  checksum: string;
+  profile_mask: uint;
+}
+
+root_type LandTile;
+
+

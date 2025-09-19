@@ -1,0 +1,6 @@
+/Users/borovinsky.in/dev/LoxxCore/build/CMakeFiles/edit_cache.dir
+/Users/borovinsky.in/dev/LoxxCore/build/CMakeFiles/rebuild_cache.dir
+/Users/borovinsky.in/dev/LoxxCore/build/converter/CMakeFiles/generate_flatbuffers.dir
+/Users/borovinsky.in/dev/LoxxCore/build/converter/CMakeFiles/converter.dir
+/Users/borovinsky.in/dev/LoxxCore/build/converter/CMakeFiles/edit_cache.dir
+/Users/borovinsky.in/dev/LoxxCore/build/converter/CMakeFiles/rebuild_cache.dir
