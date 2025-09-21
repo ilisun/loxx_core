@@ -4,7 +4,7 @@
 # compile CXX with /usr/bin/clang++
 CXX_DEFINES = 
 
-CXX_INCLUDES = -I/Users/borovinsky.in/dev/LoxxCore/core/include
+CXX_INCLUDES = -I/Users/borovinsky.in/dev/LoxxCore/core/include -I/Users/borovinsky.in/dev/LoxxCore/build/core/generated -I/opt/homebrew/include
 
 CXX_FLAGSarm64 = -g -std=c++20 -arch arm64
 

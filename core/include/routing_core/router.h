@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <memory>
 
 namespace routing_core {
 
@@ -17,29 +18,35 @@ enum class RouteStatus {
 };
 
 struct Coord {
-  double lat;
-  double lon;
+  double lat{};
+  double lon{};
 };
 
 struct RouteResult {
   RouteStatus status {RouteStatus::INTERNAL_ERROR};
-  std::vector<Coord> polyline;
-  double distance_m {0.0};
-  double duration_s {0.0};
-  std::vector<uint64_t> edge_ids;
-  std::string error_message;
+  std::vector<Coord> polyline;        // геометрия маршрута
+  double distance_m {0.0};            // суммарная длина
+  double duration_s {0.0};            // суммарное время (сек)
+  std::vector<uint64_t> edge_ids;     // идентификаторы рёбер маршрута
+  std::string error_message;          // описание ошибки (опц.)
+};
+
+struct RouterOptions {
+  int tileZoom = 14;                  // уровень тайла (должен совпадать с конвертером)
+  size_t tileCacheCapacity = 128;     // LRU-кэш тайлов
 };
 
 class Router {
 public:
-  explicit Router(const std::string& db_path);
+  explicit Router(const std::string& db_path, RouterOptions opt = {});
+  ~Router();
+
+  // Маршрут через start..waypoints..end
   RouteResult route(Profile profile, const std::vector<Coord>& waypoints);
 
 private:
   struct Impl;
-  Impl* impl_;
+  std::unique_ptr<Impl> impl_;
 };
 
 } // namespace routing_core
-
-

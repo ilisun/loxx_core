@@ -13,7 +13,7 @@
 },
 {
   "directory": "/Users/borovinsky.in/dev/LoxxCore/build/core",
-  "command": "/usr/bin/clang++  -I/Users/borovinsky.in/dev/LoxxCore/core/include -g -std=c++20 -arch arm64 -o CMakeFiles/route_demo.dir/examples/route_demo.cpp.o -c /Users/borovinsky.in/dev/LoxxCore/core/examples/route_demo.cpp",
+  "command": "/usr/bin/clang++  -I/Users/borovinsky.in/dev/LoxxCore/core/include -I/Users/borovinsky.in/dev/LoxxCore/build/core/generated -I/opt/homebrew/include -g -std=c++20 -arch arm64 -o CMakeFiles/route_demo.dir/examples/route_demo.cpp.o -c /Users/borovinsky.in/dev/LoxxCore/core/examples/route_demo.cpp",
   "file": "/Users/borovinsky.in/dev/LoxxCore/core/examples/route_demo.cpp",
   "output": "core/CMakeFiles/route_demo.dir/examples/route_demo.cpp.o"
 },
