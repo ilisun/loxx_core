@@ -24,15 +24,18 @@ int main(int argc, char** argv) {
   Coord b{std::stod(argv[4]), std::stod(argv[5])};
   Profile profile = Profile::Car;
   bool dump = false;
-  if (argc >= 7) {
-    std::string p = argv[6];
-    if (p == "foot") profile = Profile::Foot;
-    if (p == "--dump") dump = true;
+  int zoomOpt = 14;
+  // простенький парсер дополнительных флагов
+  for (int i = 6; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "car") profile = Profile::Car;
+    else if (arg == "foot") profile = Profile::Foot;
+    else if (arg == "--dump") dump = true;
+    else if (arg == "--z" && i+1 < argc) { zoomOpt = std::atoi(argv[++i]); }
   }
-  if (argc >= 8 && std::string(argv[7]) == "--dump") dump = true;
 
   RouterOptions opt;
-  opt.tileZoom = 14;         // можно менять
+  opt.tileZoom = zoomOpt;     // можно менять
   opt.tileCacheCapacity = 128;
   Router r(db, opt);
 

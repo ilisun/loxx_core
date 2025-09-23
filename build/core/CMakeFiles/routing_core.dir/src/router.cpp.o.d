@@ -933,6 +933,8 @@ core/CMakeFiles/routing_core.dir/src/router.cpp.o: \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/deque.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__fwd/queue.h \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/deque \
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/map \
   /Users/borovinsky.in/dev/LoxxCore/build/core/generated/land_tile_generated.h \
   /Users/borovinsky.in/dev/LoxxCore/core/include/routing_core/tile_view.h \
-  /Users/borovinsky.in/dev/LoxxCore/core/include/routing_core/tiler.h
+  /Users/borovinsky.in/dev/LoxxCore/core/include/routing_core/tiler.h \
+  /Users/borovinsky.in/dev/LoxxCore/core/include/routing_core/edge_id.h

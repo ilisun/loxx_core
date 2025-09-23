@@ -9,10 +9,13 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <unordered_map>
+#include <map>
 
 #include "land_tile_generated.h"
 #include "routing_core/tile_view.h"
 #include "routing_core/tiler.h"
+#include "routing_core/edge_id.h"
 
 namespace routing_core {
 
@@ -36,6 +39,10 @@ struct Router::Impl {
     const double c = 2 * std::atan2(std::sqrt(a), std::sqrt(1-a));
     return R * c;
   }
+
+  // --- упаковка/распаковка edge_id: 64 бита = [z:8][x:20][y:20][ei:16]
+  static uint64_t makeEdgeId(int z, uint32_t x, uint32_t y, uint32_t edgeIdx) { return edgeid::make(z,x,y,edgeIdx); }
+  static void parseEdgeId(uint64_t id, int& z, uint32_t& x, uint32_t& y, uint32_t& edgeIdx) { edgeid::parse(id,z,x,y,edgeIdx); }
 
   // --- снап к ребру ---
   struct EdgeSnap {
@@ -61,7 +68,7 @@ struct Router::Impl {
     outY = ay + t*vy;
   }
 
-  static std::optional<EdgeSnap> snapToEdge(const TileView& view, double lat, double lon) {
+  static std::optional<EdgeSnap> snapToEdge(const TileView& view, double lat, double lon, Profile profile) {
     if (!view.valid() || view.edgeCount() == 0) return std::nullopt;
     EdgeSnap best;
     bool has = false;
@@ -71,6 +78,12 @@ struct Router::Impl {
 
     for (int ei = 0; ei < view.edgeCount(); ++ei) {
       tmp.clear();
+      const auto* e = view.edgeAt(static_cast<uint32_t>(ei));
+      // профильная доступность: должна быть скорость > 0 и доступен профиль
+      double sp = (profile == Profile::Car) ? e->speed_mps() : e->foot_speed_mps();
+      auto mask = e->access_mask();
+      bool allowed = (profile == Profile::Car) ? ((mask & 1) != 0) : ((mask & 2) != 0);
+      if (!allowed || sp <= 0.0) continue;
       view.appendEdgeShape(static_cast<uint32_t>(ei), tmp, /*skipFirst*/false);
       if (tmp.size() < 2) continue;
       for (int k = 0; k+1 < static_cast<int>(tmp.size()); ++k) {
@@ -86,7 +99,6 @@ struct Router::Impl {
         if (d < best.dist_m) {
           has = true;
           best.edgeIdx = static_cast<uint32_t>(ei);
-          const auto* e = view.edgeAt(best.edgeIdx);
           best.fromNode = static_cast<int>(e->from_node());
           best.toNode   = static_cast<int>(e->to_node());
           best.segIndex = k;
@@ -466,6 +478,122 @@ struct Router::Impl {
     return rr;
   }
 
+  // ---- Мультитайловый граф (с коннекторами по lat_q/lon_q) ----
+  struct GlobalEdge { int to; double w; uint8_t isVirt; uint32_t tileX, tileY, edgeIdx; };
+  struct GlobalNode { double lat, lon; };
+
+  // key for quantized coordinate
+  struct QKey { int32_t lat_q; int32_t lon_q; };
+  struct QKeyHash { size_t operator()(const QKey& k) const noexcept { return (static_cast<size_t>(static_cast<uint32_t>(k.lat_q))<<32) ^ static_cast<size_t>(static_cast<uint32_t>(k.lon_q)); } };
+  struct QKeyEq { bool operator()(const QKey& a, const QKey& b) const noexcept { return a.lat_q==b.lat_q && a.lon_q==b.lon_q; } };
+
+  // Сбор прямоугольника тайлов (с рамкой)
+  void collectTileRange(const Coord& a, const Coord& b, int frame,
+                        std::vector<TileKey>& out) {
+    auto ka = webTileKeyFor(a.lat, a.lon, tileZoom);
+    auto kb = webTileKeyFor(b.lat, b.lon, tileZoom);
+    int minx = std::min(ka.x, kb.x) - frame;
+    int maxx = std::max(ka.x, kb.x) + frame;
+    int miny = std::min(ka.y, kb.y) - frame;
+    int maxy = std::max(ka.y, kb.y) + frame;
+    for (int y=miny;y<=maxy;++y) {
+      for (int x=minx;x<=maxx;++x) {
+        out.push_back(TileKey{tileZoom,x,y});
+      }
+    }
+  }
+
+  // Построение глобального графа из набора тайлов
+  void buildGlobalGraph(Profile profile,
+                        const std::vector<std::pair<TileKey,TileView>>& tiles,
+                        std::vector<GlobalNode>& nodes,
+                        std::vector<std::vector<GlobalEdge>>& adj,
+                        std::vector<std::vector<std::pair<int,int>>>& revAdj,
+                        std::unordered_map<uint64_t,int>& q2node) {
+    nodes.clear(); adj.clear(); revAdj.clear(); q2node.clear();
+
+    auto nodeIdFor = [&](int32_t lat_q, int32_t lon_q, double lat, double lon) {
+      uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(lat_q))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(lon_q));
+      auto it = q2node.find(key);
+      if (it!=q2node.end()) return it->second;
+      int id = static_cast<int>(nodes.size());
+      nodes.push_back(GlobalNode{lat,lon});
+      adj.emplace_back();
+      revAdj.emplace_back();
+      q2node.emplace(key,id);
+      return id;
+    };
+
+    for (auto& tv : tiles) {
+      const auto& tref = tv.first; const auto& view = tv.second;
+      int N = view.nodeCount(); int E = view.edgeCount();
+      // предварительно создать все ноды
+      std::vector<int> local2global(N, -1);
+      for (int i=0;i<N;++i) {
+        local2global[i] = nodeIdFor(view.nodeLatQ(i), view.nodeLonQ(i), view.nodeLat(i), view.nodeLon(i));
+      }
+      // добавить рёбра
+      for (int ei=0; ei<E; ++ei) {
+        const auto* e = view.edgeAt(static_cast<uint32_t>(ei));
+        if (!edgeAllowed(e, profile, static_cast<int>(e->from_node()))) continue;
+        double w = edgeTraversalTimeSec(e, profile);
+        if (!std::isfinite(w)) continue;
+        int u = local2global[static_cast<int>(e->from_node())];
+        int v = local2global[static_cast<int>(e->to_node())];
+        adj[u].push_back(GlobalEdge{v, w, 0u, static_cast<uint32_t>(tref.x), static_cast<uint32_t>(tref.y), static_cast<uint32_t>(ei)});
+        revAdj[v].push_back({u, static_cast<int>(adj[u].size()-1)});
+        // если не oneway — добавить обратное ребро
+        if (!e->oneway()) {
+          // обратный проход допустим только если профилю разрешено
+          if (edgeAllowed(e, profile, static_cast<int>(e->to_node()))) {
+            adj[v].push_back(GlobalEdge{u, w, 0u, static_cast<uint32_t>(tref.x), static_cast<uint32_t>(tref.y), static_cast<uint32_t>(ei)});
+            revAdj[u].push_back({v, static_cast<int>(adj[v].size()-1)});
+          }
+        }
+      }
+    }
+  }
+
+  // bi-A* по глобальному графу
+  bool astarGlobalBi(const std::vector<GlobalNode>& nodes,
+                     const std::vector<std::vector<GlobalEdge>>& adj,
+                     const std::vector<std::vector<std::pair<int,int>>>& revAdj,
+                     int s, int t,
+                     std::vector<int>& meetPath, std::vector<uint64_t>& usedEdgeIds) {
+    struct L { double g{std::numeric_limits<double>::infinity()}; int prev{-1}; int prevEdge{-1}; };
+    struct Q { int v; double f; }; struct C { bool operator()(const Q&a,const Q&b)const{return a.f>b.f;}};
+    std::vector<L> F(nodes.size()), B(nodes.size());
+    std::priority_queue<Q,std::vector<Q>,C> pqF, pqB;
+    auto hF=[&](int v){ return haversine(nodes[v].lat,nodes[v].lon,nodes[t].lat,nodes[t].lon)/13.9; };
+    auto hB=[&](int v){ return haversine(nodes[v].lat,nodes[v].lon,nodes[s].lat,nodes[s].lon)/13.9; };
+    F[s].g=0.0; B[t].g=0.0; pqF.push({s,hF(s)}); pqB.push({t,hB(t)});
+    double bestMu = std::numeric_limits<double>::infinity(); int meet=-1;
+    while(!pqF.empty() || !pqB.empty()){
+      if(!pqF.empty()){
+        auto q=pqF.top(); pqF.pop();
+        if (F[q.v].g + hF(q.v) > bestMu) break;
+        for(size_t i=0;i<adj[q.v].size();++i){ const auto& e=adj[q.v][i]; double cand=F[q.v].g+e.w; if(cand<F[e.to].g){ F[e.to].g=cand; F[e.to].prev=q.v; F[e.to].prevEdge=static_cast<int>(i); pqF.push({e.to, cand + hF(e.to)}); if (B[e.to].g< std::numeric_limits<double>::infinity()){ double mu=cand+B[e.to].g; if(mu<bestMu){ bestMu=mu; meet=e.to; } } } }
+      }
+      if(!pqB.empty()){
+        auto q=pqB.top(); pqB.pop();
+        if (B[q.v].g + hB(q.v) > bestMu) break;
+        for(const auto& re : revAdj[q.v]){ int from=re.first; int idx=re.second; const auto& e=adj[from][static_cast<size_t>(idx)]; double cand=B[q.v].g + e.w; if(cand<B[from].g){ B[from].g=cand; B[from].prev=q.v; B[from].prevEdge=idx; pqB.push({from, cand + hB(from)}); if (F[from].g< std::numeric_limits<double>::infinity()){ double mu=cand+F[from].g; if(mu<bestMu){ bestMu=mu; meet=from; } } } }
+      }
+    }
+    if (meet<0) return false;
+    // Восстановление пути F: s->meet, B: meet->t
+    std::vector<std::pair<int,int>> seq; // (u, edgeIdxInAdj)
+    for(int v=meet; v!=s; v=F[v].prev){ int u=F[v].prev; seq.emplace_back(u, F[v].prevEdge); }
+    std::reverse(seq.begin(), seq.end());
+    for(int v=meet; v!=t; v=B[v].prev){ int u=v; int idx=B[u].prevEdge; seq.emplace_back(u, idx); // edge u->B[u].prev
+    }
+    usedEdgeIds.clear(); uint64_t lastE=std::numeric_limits<uint64_t>::max();
+    for(auto& p: seq){ int u=p.first; int idx=p.second; if (idx<0) continue; const auto& ge=adj[u][static_cast<size_t>(idx)]; uint64_t id=makeEdgeId(tileZoom, ge.tileX, ge.tileY, ge.edgeIdx); if(id!=lastE){ usedEdgeIds.push_back(id); lastE=id; } }
+    // meetPath возвращать не обязательно для polyline, но заполним
+    meetPath.clear(); meetPath.push_back(s); meetPath.push_back(meet); meetPath.push_back(t);
+    return true;
+  }
+
 }; // Impl
 
 Router::Router(const std::string& db_path, RouterOptions opt)
@@ -481,62 +609,126 @@ RouteResult Router::route(Profile profile, const std::vector<Coord>& waypoints) 
     return rr;
   }
 
-  // В v1 — все точки должны быть в одном тайле
-  auto key0 = webTileKeyFor(waypoints.front().lat, waypoints.front().lon, impl_->tileZoom);
-  for (size_t i=1;i<waypoints.size();++i) {
-    auto ki = webTileKeyFor(waypoints[i].lat, waypoints[i].lon, impl_->tileZoom);
-    if (ki.x != key0.x || ki.y != key0.y || ki.z != key0.z) {
-      rr.status = RouteStatus::NO_ROUTE;
-      rr.error_message = "multi-tile routing not supported yet (schema lacks cross-tile connectivity)";
-      return rr;
-    }
+  // Мультитайловая версия v1: прямоугольник тайлов + динамическая рамка по расстоянию
+  double dist_m_straight = Impl::haversine(waypoints.front().lat, waypoints.front().lon,
+                                           waypoints.back().lat,  waypoints.back().lon);
+  double dist_km = dist_m_straight / 1000.0;
+  // Эвристика: размер тайла ~4 км на экваторе; возьмём запас +1 и лимит сверху
+  int dyn_frame = static_cast<int>(std::ceil(dist_km / 4.0)) + 1;
+  if (dyn_frame < 1) dyn_frame = 1;
+  if (dyn_frame > 8) dyn_frame = 8;
+  std::vector<TileKey> trefs; impl_->collectTileRange(waypoints.front(), waypoints.back(), dyn_frame, trefs);
+  std::vector<std::pair<TileKey,TileView>> tiles;
+  tiles.reserve(trefs.size());
+  for (auto& tr : trefs) {
+    auto b = impl_->store.load(tr.z, tr.x, tr.y);
+    if (!b) continue;
+    TileView v(b->buffer);
+    if (!v.valid() || v.edgeCount()==0 || v.nodeCount()<2) continue;
+    tiles.emplace_back(tr, std::move(v));
   }
+  if (tiles.empty()) { rr.status = RouteStatus::NO_TILE; rr.error_message = "no tiles in range"; return rr; }
 
-  auto blob = impl_->store.load(key0.z, key0.x, key0.y);
-  if (!blob) { rr.status = RouteStatus::NO_TILE; rr.error_message = "no tile for start"; return rr; }
-  TileView view(blob->buffer);
-  if (!view.valid() || view.edgeCount() == 0 || view.nodeCount() < 2) {
-    rr.status = RouteStatus::NO_ROUTE; rr.error_message = "empty tile"; return rr;
-  }
+  std::vector<Impl::GlobalNode> nodes; std::vector<std::vector<Impl::GlobalEdge>> adj; std::vector<std::vector<std::pair<int,int>>> revAdj; std::unordered_map<uint64_t,int> q2node;
+  impl_->buildGlobalGraph(profile, tiles, nodes, adj, revAdj, q2node);
 
-  RouteResult total;
-  total.status = RouteStatus::OK;
+  // снап по всем тайлам: просто выберем ближайший edgeSnap среди tiles[0..]
+  auto bestSnap = [&](const Coord& c){
+    std::optional<Impl::EdgeSnap> best; double bestD=std::numeric_limits<double>::infinity(); int bestTile=-1;
+    for (int i=0;i<(int)tiles.size();++i){ auto s=Impl::snapToEdge(tiles[i].second,c.lat,c.lon, profile); if(!s) continue; if(s->dist_m<bestD){ best= s; bestD=s->dist_m; bestTile=i; } }
+    return std::tuple{best, bestTile}; };
 
-  for (size_t i=0;i+1<waypoints.size();++i) {
-    auto sSnap = Impl::snapToEdge(view, waypoints[i].lat,   waypoints[i].lon);
-    auto tSnap = Impl::snapToEdge(view, waypoints[i+1].lat, waypoints[i+1].lon);
-    if (!sSnap || !tSnap) {
-      rr.status = RouteStatus::NO_ROUTE;
-      rr.error_message = "failed to snap to edge";
-      return rr;
-    }
+  auto [sSnap, sTile] = bestSnap(waypoints.front());
+  auto [tSnap, tTile] = bestSnap(waypoints.back());
+  if (!sSnap || !tSnap) { rr.status=RouteStatus::NO_ROUTE; rr.error_message="failed to snap (multi-tile)"; return rr; }
 
-    auto segRes = impl_->routeSingleTile(profile, TileKey{key0.z,key0.x,key0.y}, view, *sSnap, *tSnap);
-    if (segRes.status != RouteStatus::OK) return segRes;
+  // глобальные узлы для старта/финиша — привяжем к ближайшим реальным узлам (from/to соответствующих рёбер)
+  auto& sView = tiles[sTile].second; auto& tView = tiles[tTile].second;
+  int sFrom = q2node[(static_cast<uint64_t>(static_cast<uint32_t>(sView.nodeLatQ(sSnap->fromNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(sView.nodeLonQ(sSnap->fromNode)))];
+  int sTo   = q2node[(static_cast<uint64_t>(static_cast<uint32_t>(sView.nodeLatQ(sSnap->toNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(sView.nodeLonQ(sSnap->toNode)))];
+  int tFrom = q2node[(static_cast<uint64_t>(static_cast<uint32_t>(tView.nodeLatQ(tSnap->fromNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(tView.nodeLonQ(tSnap->fromNode)))];
+  int tTo   = q2node[(static_cast<uint64_t>(static_cast<uint32_t>(tView.nodeLatQ(tSnap->toNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(tView.nodeLonQ(tSnap->toNode)))];
 
-    if (i == 0) {
-      total = std::move(segRes);
+  // выберем стартовый и конечный глобальные узлы как ближайшие из пары (from/to) по геометрии
+  auto pickClosest = [&](int a, int b, const Coord& c){ double da=Impl::haversine(nodes[a].lat,nodes[a].lon,c.lat,c.lon); double db=Impl::haversine(nodes[b].lat,nodes[b].lon,c.lat,c.lon); return (da<=db)?a:b; };
+  int sNode = pickClosest(sFrom, sTo, waypoints.front());
+  int tNode = pickClosest(tFrom, tTo, waypoints.back());
+
+  std::vector<int> gpath; std::vector<uint64_t> eids;
+  // Добавим виртуальные узлы vS,vE и полу-рёбра до ближайших узлов snapped-ребёр с учётом oneway
+  int vS = static_cast<int>(nodes.size());
+  nodes.push_back(Impl::GlobalNode{sSnap->projLat, sSnap->projLon});
+  adj.emplace_back();
+  int vE = static_cast<int>(nodes.size());
+  nodes.push_back(Impl::GlobalNode{tSnap->projLat, tSnap->projLon});
+  adj.emplace_back();
+
+  auto addVS = [&](const TileView& view, const Impl::EdgeSnap& snap){
+    const auto* e = view.edgeAt(snap.edgeIdx);
+    double speed = (profile==Profile::Car) ? e->speed_mps() : e->foot_speed_mps();
+    if (speed<=0.0) return;
+    double w = e->length_m()/speed;
+    double t = std::clamp(snap.t, 0.0, 1.0);
+    // fromNode -> vS (доля t)
+    if (!e->oneway()) {
+      adj[sNode].push_back(Impl::GlobalEdge{vS, t*w, 1u, 0,0,0});
     } else {
-      // Склейка без дублирования
-      if (!total.polyline.empty() && !segRes.polyline.empty()) {
-        auto& last = total.polyline.back();
-        auto& first = segRes.polyline.front();
-        if (last.lat == first.lat && last.lon == first.lon) {
-          // ок, просто сшиваем
-        } else {
-          total.polyline.push_back(first);
-        }
-      }
-      total.polyline.insert(total.polyline.end(),
-                            segRes.polyline.begin() + (segRes.polyline.empty()?0:1),
-                            segRes.polyline.end());
-      total.distance_m += segRes.distance_m; // segRes.distance_m уже посчитана в сборке polyline
-      total.duration_s += segRes.duration_s;
-      total.edge_ids.insert(total.edge_ids.end(), segRes.edge_ids.begin(), segRes.edge_ids.end());
+      // oneway: допускаем вход в vS только если направление from->to
+      uint64_t kFrom = (static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLatQ(snap.fromNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLonQ(snap.fromNode)));
+      int fromGlobal = q2node[kFrom];
+      if (fromGlobal==sNode) adj[sNode].push_back(Impl::GlobalEdge{vS, t*w, 1u, 0,0,0});
     }
-  }
+    // vS -> toNode (доля 1-t) всегда по направлению ребра
+    uint64_t kTo = (static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLatQ(snap.toNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLonQ(snap.toNode)));
+    int toGlobal = q2node[kTo];
+    adj[vS].push_back(Impl::GlobalEdge{toGlobal, (1.0-t)*w, 1u, 0,0,0});
+    // если не oneway — позволяем обратный ход vS->fromNode
+    if (!e->oneway()) {
+      uint64_t kFrom2 = (static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLatQ(snap.fromNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLonQ(snap.fromNode)));
+      int fromGlobal = q2node[kFrom2];
+      adj[vS].push_back(Impl::GlobalEdge{fromGlobal, t*w, 1u, 0,0,0});
+    }
+  };
 
-  return total;
+  auto addVE = [&](const TileView& view, const Impl::EdgeSnap& snap){
+    const auto* e = view.edgeAt(snap.edgeIdx);
+    double speed = (profile==Profile::Car) ? e->speed_mps() : e->foot_speed_mps();
+    if (speed<=0.0) return;
+    double w = e->length_m()/speed;
+    double t = std::clamp(snap.t, 0.0, 1.0);
+    // fromNode -> vE (доля t) по направлению ребра
+    uint64_t kFrom3 = (static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLatQ(snap.fromNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLonQ(snap.fromNode)));
+    int fromGlobal = q2node[kFrom3];
+    adj[fromGlobal].push_back(Impl::GlobalEdge{vE, t*w, 1u, 0,0,0});
+    // если не oneway — toNode -> vE (доля 1-t)
+    if (!e->oneway()) {
+      uint64_t kTo2 = (static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLatQ(snap.toNode)))<<32) ^ static_cast<uint64_t>(static_cast<uint32_t>(view.nodeLonQ(snap.toNode)));
+      int toGlobal = q2node[kTo2];
+      adj[toGlobal].push_back(Impl::GlobalEdge{vE, (1.0-t)*w, 1u, 0,0,0});
+    }
+  };
+
+  addVS(sView, *sSnap);
+  addVE(tView, *tSnap);
+
+  if (!impl_->astarGlobalBi(nodes, adj, revAdj, vS, vE, gpath, eids)) { rr.status=RouteStatus::NO_ROUTE; rr.error_message="no path in multi-tile"; return rr; }
+
+  // собрать polyline по edgeIds
+  rr.polyline.clear(); rr.edge_ids = eids; rr.distance_m=0; rr.duration_s=0;
+  auto appendPoint=[&](double la,double lo){ if(!rr.polyline.empty()){ auto& L=rr.polyline.back(); rr.distance_m+=Impl::haversine(L.lat,L.lon,la,lo);} rr.polyline.push_back(Coord{la,lo}); };
+  for (auto id : eids){
+    int z; uint32_t x,y,ei; Impl::parseEdgeId(id, z, x, y, ei);
+    // найдём view по (x,y)
+    TileView const* vptr=nullptr;
+    for (auto& pr: tiles){ if (pr.first.x==(int)x && pr.first.y==(int)y){ vptr=&pr.second; break; } }
+    if (!vptr) continue;
+    std::vector<std::pair<double,double>> pts;
+    vptr->appendEdgeShape(static_cast<uint32_t>(ei), pts, /*skipFirst*/!rr.polyline.empty());
+    for (auto& p:pts) appendPoint(p.first,p.second);
+    rr.duration_s += Impl::edgeTraversalTimeSec(vptr->edgeAt(static_cast<uint32_t>(ei)), profile);
+  }
+  rr.status = RouteStatus::OK;
+  return rr;
 }
 
 } // namespace routing_core

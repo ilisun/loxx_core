@@ -36,6 +36,14 @@ public:
     const auto* n = root_->nodes()->Get(static_cast<flatbuffers::uoffset_t>(idx));
     return static_cast<double>(n->lon_q()) / 1e6;
   }
+  inline int32_t nodeLatQ(int idx) const {
+    const auto* n = root_->nodes()->Get(static_cast<flatbuffers::uoffset_t>(idx));
+    return n->lat_q();
+  }
+  inline int32_t nodeLonQ(int idx) const {
+    const auto* n = root_->nodes()->Get(static_cast<flatbuffers::uoffset_t>(idx));
+    return n->lon_q();
+  }
 
   // Смежность (out-edges) из узла
   inline uint32_t firstEdge(int nodeIdx) const {
