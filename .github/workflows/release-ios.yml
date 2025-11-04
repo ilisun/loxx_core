@@ -34,7 +34,7 @@ jobs:
         id: checksum
         run: |
           cd releases
-          CHECKSUM=$(swift package compute-checksum LoxxCore.xcframework.zip)
+          CHECKSUM=$(swift package compute-checksum loxx-core.xcframework.zip)
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
           echo "Checksum: $CHECKSUM"
       
@@ -54,8 +54,8 @@ jobs:
             **Checksum for Package.swift:**
             ```swift
             .binaryTarget(
-                name: "LoxxCore",
-                url: "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/LoxxCore.xcframework.zip",
+                name: "LoxxRouterCore",
+                url: "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/loxx-core.xcframework.zip",
                 checksum: "${{ steps.checksum.outputs.checksum }}"
             )
             ```
@@ -75,8 +75,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./releases/LoxxCore.xcframework.zip
-          asset_name: LoxxCore.xcframework.zip
+          asset_path: ./releases/loxx-core.xcframework.zip
+          asset_name: loxx-core.xcframework.zip
           asset_content_type: application/zip
       
       - name: Comment checksum on commit
