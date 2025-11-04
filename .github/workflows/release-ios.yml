@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build-xcframework:
     runs-on: macos-14  # macOS с Apple Silicon
