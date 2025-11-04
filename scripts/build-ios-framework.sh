@@ -67,8 +67,26 @@ file(GLOB_RECURSE SOURCES
 add_library(loxx-core SHARED ${SOURCES})
 
 # FlatBuffers include directories
-find_path(FLATBUFFERS_INCLUDE_DIR flatbuffers/flatbuffers.h
-          HINTS /opt/homebrew/include /usr/local/include /usr/include)
+# Попробуем найти через brew
+execute_process(
+    COMMAND brew --prefix flatbuffers
+    OUTPUT_VARIABLE FLATBUFFERS_PREFIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+
+if(FLATBUFFERS_PREFIX)
+    set(FLATBUFFERS_INCLUDE_DIR "${FLATBUFFERS_PREFIX}/include")
+    message(STATUS "Found FlatBuffers via brew: ${FLATBUFFERS_INCLUDE_DIR}")
+else()
+    # Fallback: поиск в стандартных путях
+    find_path(FLATBUFFERS_INCLUDE_DIR flatbuffers/flatbuffers.h
+              PATHS /opt/homebrew/include /usr/local/include /usr/include)
+    
+    if(NOT FLATBUFFERS_INCLUDE_DIR)
+        message(FATAL_ERROR "FlatBuffers headers not found! Install with: brew install flatbuffers")
+    endif()
+endif()
 
 target_include_directories(loxx-core
     PUBLIC 
