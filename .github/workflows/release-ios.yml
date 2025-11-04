@@ -20,7 +20,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          brew install cmake sqlite3
+          brew install cmake sqlite3 flatbuffers
       
       - name: Make build script executable
         run: chmod +x scripts/build-ios-framework.sh
