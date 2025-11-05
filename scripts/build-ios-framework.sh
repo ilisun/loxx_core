@@ -100,6 +100,26 @@ target_include_directories(loxx-core
 # Зависимость от генерации FlatBuffers
 add_dependencies(loxx-core generate_fbs)
 
+# Собрать все публичные заголовки
+file(GLOB ROUTING_CORE_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/../core/include/routing_core/*.h")
+
+# Добавить сгенерированный FlatBuffers заголовок в корень Headers
+set(GENERATED_HEADER "${GENERATED_DIR}/land_tile_generated.h")
+
+# Скопировать сгенерированный заголовок в include для публичного доступа
+add_custom_command(
+    TARGET loxx-core POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${GENERATED_HEADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../core/include/land_tile_generated.h"
+    DEPENDS "${GENERATED_HEADER}"
+    COMMENT "Copying generated header to public includes"
+)
+
+# Все публичные заголовки (routing_core/*.h + land_tile_generated.h)
+set(PUBLIC_HEADERS ${ROUTING_CORE_HEADERS})
+list(APPEND PUBLIC_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/../core/include/land_tile_generated.h")
+
 # Framework свойства
 set_target_properties(loxx-core PROPERTIES
     FRAMEWORK TRUE
@@ -107,7 +127,7 @@ set_target_properties(loxx-core PROPERTIES
     MACOSX_FRAMEWORK_IDENTIFIER com.loxx.loxx-core
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
-    PUBLIC_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/../core/include/routing_core/router.h;${CMAKE_CURRENT_SOURCE_DIR}/../core/include/routing_core/profile.h;${CMAKE_CURRENT_SOURCE_DIR}/../core/include/routing_core/tile_store.h"
+    PUBLIC_HEADER "${PUBLIC_HEADERS}"
 )
 
 # SQLite линковка
